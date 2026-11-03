@@ -26,7 +26,4 @@ Build a tool that collects Spark job metrics, ranks wasteful jobs, and suggests 
 - p95 runtime before vs after for the worst jobs
 - Shuffle/spill reduction per fix
 
-## Resume point to keep
-"Profiled [N test jobs] for shuffle, spill, and executor time; identified [X%] waste and reduced compute by [Y%] on the benchmark workload."
-
 Note: use benchmarked / synthetic-load wording for personal projects, not production claims.

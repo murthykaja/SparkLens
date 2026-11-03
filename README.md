@@ -39,7 +39,7 @@ No Python, Java, or Spark installation required on the host.
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/your-username/SparkLens.git
+git clone https://github.com/murthykaja/SparkLens.git
 cd SparkLens
 
 # 2. Build and start all services

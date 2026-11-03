@@ -1,0 +1,164 @@
+version: "3.8"
+
+volumes:
+  spark-events:
+  postgres-data:
+
+networks:
+  sparklens:
+    driver: bridge
+
+services:
+
+  # ─── PostgreSQL ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: sparklens-postgres
+    environment:
+      POSTGRES_DB: sparklens
+      POSTGRES_USER: sparklens
+      POSTGRES_PASSWORD: sparklens123
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - sparklens
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sparklens -d sparklens"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── Spark Master ──────────────────────────────────────────────────────────
+  spark-master:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: sparklens/spark:local
+    container_name: sparklens-spark-master
+    hostname: spark-master
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.master.Master
+      - --host
+      - spark-master
+      - --port
+      - "7077"
+      - --webui-port
+      - "8080"
+    volumes:
+      - spark-events:/opt/spark/logs/events
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    networks:
+      - sparklens
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  # ─── Spark Worker ──────────────────────────────────────────────────────────
+  spark-worker:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: sparklens/spark:local
+    container_name: sparklens-spark-worker
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - spark://spark-master:7077
+    environment:
+      - SPARK_WORKER_MEMORY=2g
+      - SPARK_WORKER_CORES=2
+    volumes:
+      - spark-events:/opt/spark/logs/events
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    networks:
+      - sparklens
+
+  # ─── Spark History Server ──────────────────────────────────────────────────
+  spark-history:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: sparklens/spark:local
+    container_name: sparklens-history
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.history.HistoryServer
+    environment:
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:///opt/spark/logs/events -Dspark.history.ui.port=18080
+    volumes:
+      - spark-events:/opt/spark/logs/events
+    ports:
+      - "18080:18080"
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    networks:
+      - sparklens
+
+  # ─── Benchmark Jobs (one-shot) ─────────────────────────────────────────────
+  benchmark:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    image: sparklens/spark:local
+    container_name: sparklens-benchmark
+    entrypoint: ["/entrypoint.sh"]
+    environment:
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - EVENT_LOG_DIR=/opt/spark/logs/events
+    volumes:
+      - spark-events:/opt/spark/logs/events
+    depends_on:
+      spark-master:
+        condition: service_healthy
+      spark-worker:
+        condition: service_started
+    networks:
+      - sparklens
+    restart: "no"
+
+  # ─── Collector (log parser + metric store) ─────────────────────────────────
+  collector:
+    build:
+      context: ./collector
+      dockerfile: Dockerfile
+    container_name: sparklens-collector
+    environment:
+      - EVENT_LOG_DIR=/spark-events
+      - DATABASE_URL=postgresql://sparklens:sparklens123@postgres:5432/sparklens
+      - POLL_INTERVAL=15
+    volumes:
+      - spark-events:/spark-events
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - sparklens
+    restart: unless-stopped
+
+  # ─── Streamlit Dashboard ───────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: sparklens-dashboard
+    environment:
+      - DATABASE_URL=postgresql://sparklens:sparklens123@postgres:5432/sparklens
+    ports:
+      - "8501:8501"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - sparklens
+    restart: unless-stopped
